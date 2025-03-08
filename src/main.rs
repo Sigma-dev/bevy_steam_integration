@@ -12,6 +12,7 @@ fn main() {
         .insert_resource(SteamClient::new())
         .add_systems(Startup, setup)
         .add_systems(Update, (handle_receivers, update))
+        .add_systems(PreUpdate, receive_messages)
         .run();
 }
 
@@ -42,6 +43,18 @@ impl SteamClient {
 
     pub fn is_in_lobby(&self) -> bool {
         self.lobby_id.is_some()
+    }
+
+    pub fn join_lobby(&self, lobby_id: LobbyId) {
+        let tx = self.channel.sender.clone();
+        self.client.matchmaking().join_lobby(lobby_id, move |res| {
+            if let Ok(lobby_id) = res {
+                match tx.send(ChannelMessage::LobbyJoined(lobby_id)) {
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            }
+        });
     }
 
     pub fn get_players_in_lobby(&self) -> Vec<SteamId> {
@@ -84,8 +97,8 @@ impl SteamClient {
             data_arr,
             0,
         );
-        println!("{:?}", res);
-        return res.map_err(|e| e.to_string());
+        println!("Sent message: {:?} {:?}", data, res);
+        return res.map_err(|e: SteamError| e.to_string());
     }
 }
 
@@ -184,17 +197,7 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
             }
             ChannelMessage::LobbyJoinRequest(lobby_id) => {
                 info!("Requested to join lobby {:?}", lobby_id);
-                steam_client
-                    .client
-                    .matchmaking()
-                    .join_lobby(lobby_id, move |res| {
-                        if let Ok(lobby_id) = res {
-                            match tx.send(ChannelMessage::LobbyJoined(lobby_id)) {
-                                Ok(_) => {}
-                                Err(_) => {}
-                            }
-                        }
-                    });
+                steam_client.join_lobby(lobby_id);
             }
         };
     }
@@ -218,5 +221,16 @@ fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
     if keys.just_pressed(KeyCode::KeyT) {
         let _ =
             steam_client.send_message_others(NetworkData { data: vec![42] }, SendFlags::RELIABLE);
+    }
+
+    if keys.just_pressed(KeyCode::KeyJ) {
+        for friend in steam_client.client.friends().get_friends(FriendFlags::ALL) {
+            if let Some(game) = friend.game_played() {
+                if game.game.app_id() == AppId(480) {
+                    steam_client.join_lobby(game.lobby);
+                    println!("Auto join");
+                }
+            }
+        }
     }
 }

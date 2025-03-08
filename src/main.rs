@@ -77,7 +77,7 @@ fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
     let tx = steam_client.create_lobby_channel.sender.clone();
 
     if keys.just_pressed(KeyCode::KeyC) {
-        matchmaking.create_lobby(LobbyType::Private, 4, move |result| match result {
+        matchmaking.create_lobby(LobbyType::FriendsOnly, 4, move |result| match result {
             Ok(lobby_id) => {
                 tx.send(lobby_id).unwrap();
                 println!("Created lobby: [{}]", lobby_id.raw())

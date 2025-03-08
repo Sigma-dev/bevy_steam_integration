@@ -7,13 +7,14 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(SteamClient::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, update)
+        .add_systems(Update, (handle_receivers, update))
         .run();
 }
 
 #[derive(Resource)]
 struct SteamClient {
     client: Client,
+    lobby_id: Option<LobbyId>,
     create_lobby_channel: SteamChannel<LobbyId>,
     lobby_chat_channel: SteamChannel<LobbyChatMsg>,
 }
@@ -22,6 +23,7 @@ impl SteamClient {
     pub fn new() -> SteamClient {
         SteamClient {
             client: Client::init_app(480).unwrap(),
+            lobby_id: None,
             create_lobby_channel: SteamChannel::new(),
             lobby_chat_channel: SteamChannel::new(),
         }
@@ -52,6 +54,23 @@ fn setup(client: Res<SteamClient>) {
         });
 }
 
+fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
+    if let Ok(lobby_id) = steam_client.create_lobby_channel.receiver.try_recv() {
+        steam_client.lobby_id = Some(lobby_id);
+        println!("Sending message to lobby chat...");
+    }
+
+    if let Ok(message) = steam_client.lobby_chat_channel.receiver.try_recv() {
+        let mut buffer = vec![0; 256];
+        let buffer = steam_client.client.matchmaking().get_lobby_chat_entry(
+            message.lobby,
+            message.chat_id,
+            buffer.as_mut_slice(),
+        );
+        println!("Message buffer: [{:?}]", buffer);
+    }
+}
+
 fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
     steam_client.client.run_callbacks();
     let matchmaking = steam_client.client.matchmaking();
@@ -67,19 +86,12 @@ fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
         });
     }
 
-    if keys.just_pressed(KeyCode::KeyT) {}
-
-    if let Ok(lobby_id) = steam_client.create_lobby_channel.receiver.try_recv() {
-        println!("Sending message to lobby chat...");
-        matchmaking
-            .send_lobby_chat_message(lobby_id, &[0, 1, 2, 3, 4, 5])
-            .expect("Failed to send chat message to lobby");
-    }
-
-    if let Ok(message) = steam_client.lobby_chat_channel.receiver.try_recv() {
-        let mut buffer = vec![0; 256];
-        let buffer =
-            matchmaking.get_lobby_chat_entry(message.lobby, message.chat_id, buffer.as_mut_slice());
-        println!("Message buffer: [{:?}]", buffer);
+    if keys.just_pressed(KeyCode::KeyT) {
+        println!("{:?}", steam_client.lobby_id);
+        if let Some(lobby_id) = steam_client.lobby_id {
+            matchmaking
+                .send_lobby_chat_message(lobby_id, &[0, 1, 2, 3, 4, 5])
+                .expect("Failed to send chat message to lobby");
+        }
     }
 }

@@ -20,7 +20,7 @@ async fn main() {
     // messages before communicating with the peer.
     messages.session_request_callback(move |req| {
         println!("Accepting session request from {:?}", req.remote());
-        assert!(req.accept());
+        req.accept();
     });
 
     // Install a callback to debug print failed peer connections

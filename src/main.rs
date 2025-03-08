@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crossbeam_channel::*;
 use serde::{Deserialize, Serialize};
 use steamworks::{
-    networking_types::{NetworkingIdentity, NetworkingMessage, SendFlags},
+    networking_types::{NetConnectionEnd, NetworkingIdentity, NetworkingMessage, SendFlags},
     *,
 };
 
@@ -149,6 +149,24 @@ fn setup(client: Res<SteamClient>) {
         .client
         .register_callback(move |message: GameLobbyJoinRequested| {
             let _ = tx.send(ChannelMessage::LobbyJoinRequest(message.lobby_steam_id));
+        });
+
+    client
+        .client
+        .networking_messages()
+        .session_request_callback(move |session_request| {
+            println!("Received session request");
+            session_request.accept();
+        });
+
+    client
+        .client
+        .networking_messages()
+        .session_failed_callback(move |res| {
+            println!(
+                "Session Failed: {:?}",
+                res.end_reason().unwrap_or(NetConnectionEnd::Other(-42))
+            );
         });
 }
 

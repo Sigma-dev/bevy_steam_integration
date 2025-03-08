@@ -1,6 +1,10 @@
 use bevy::prelude::*;
 use crossbeam_channel::*;
-use steamworks::*;
+use serde::{Deserialize, Serialize};
+use steamworks::{
+    networking_types::{NetworkingIdentity, NetworkingMessage, SendFlags},
+    *,
+};
 
 fn main() {
     App::new()
@@ -18,6 +22,11 @@ struct SteamClient {
     channel: SteamChannel,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct NetworkData {
+    data: Vec<u8>,
+}
+
 impl SteamClient {
     pub fn new() -> SteamClient {
         SteamClient {
@@ -25,6 +34,58 @@ impl SteamClient {
             lobby_id: None,
             channel: SteamChannel::new(),
         }
+    }
+
+    pub fn steam_id(&self) -> SteamId {
+        self.client.user().steam_id()
+    }
+
+    pub fn is_in_lobby(&self) -> bool {
+        self.lobby_id.is_some()
+    }
+
+    pub fn get_players_in_lobby(&self) -> Vec<SteamId> {
+        let Some(lobby_id) = self.lobby_id else {
+            panic!("Not currently in a lobby");
+        };
+        self.client.matchmaking().lobby_members(lobby_id)
+    }
+
+    pub fn send_message_others(&self, data: NetworkData, flags: SendFlags) -> Result<(), String> {
+        if !self.is_in_lobby() {
+            return Err("Not currently in a lobby".to_owned());
+        };
+        for player in self.get_players_in_lobby() {
+            if player == self.steam_id() {
+                continue;
+            }
+            self.send_message(&data, player, flags)
+                .expect("Couldn't send message in send others");
+        }
+        return Ok(());
+    }
+
+    pub fn send_message(
+        &self,
+        data: &NetworkData,
+        target: SteamId,
+        flags: SendFlags,
+    ) -> Result<(), String> {
+        if !self.is_in_lobby() {
+            return Err("Not in a lobby".to_string());
+        };
+        let serialize_data = rmp_serde::to_vec(&data);
+        let serialized = serialize_data.map_err(|err| err.to_string())?;
+        let data_arr = serialized.as_slice();
+        let network_identity = NetworkingIdentity::new_steam_id(target);
+        let res = self.client.networking_messages().send_message_to_user(
+            network_identity,
+            flags,
+            data_arr,
+            0,
+        );
+        println!("{:?}", res);
+        return res.map_err(|e| e.to_string());
     }
 }
 
@@ -51,7 +112,6 @@ fn setup(client: Res<SteamClient>) {
     let sender = client.channel.sender.clone();
     let tx = client.channel.sender.clone();
 
-    // Register the callback with the cloned sender
     client
         .client
         .register_callback(move |message: LobbyChatMsg| {
@@ -62,8 +122,27 @@ fn setup(client: Res<SteamClient>) {
     client
         .client
         .register_callback(move |message: GameLobbyJoinRequested| {
-            tx.send(ChannelMessage::LobbyJoinRequest(message.lobby_steam_id));
+            let _ = tx.send(ChannelMessage::LobbyJoinRequest(message.lobby_steam_id));
         });
+}
+
+fn receive_messages(client: Res<SteamClient>) {
+    let messages: Vec<NetworkingMessage<ClientManager>> = client
+        .client
+        .networking_messages()
+        .receive_messages_on_channel(0, 2048);
+
+    for message in messages {
+        println!("Received message: {:?}", message.data());
+        let sender = message.identity_peer().steam_id().unwrap();
+        let serialized_data = message.data();
+        let data_try: Result<NetworkData, _> = rmp_serde::from_slice(serialized_data);
+
+        if let Ok(data) = data_try {
+            println!("Decoded: {:?}", data);
+        }
+        drop(message); //not sure about usefullness, mentionned in steam docs as release
+    }
 }
 
 fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
@@ -72,11 +151,11 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
         match msg {
             ChannelMessage::LobbyCreated(lobby_id) => {
                 steam_client.lobby_id = Some(lobby_id);
-                debug!("Created lobby {:?}", lobby_id);
+                info!("Created lobby {:?}", lobby_id);
             }
             ChannelMessage::LobbyJoined(lobby_id) => {
                 steam_client.lobby_id = Some(lobby_id);
-                debug!("Joined lobby {:?}", lobby_id)
+                info!("Joined lobby {:?}", lobby_id)
             }
             ChannelMessage::LobbyChat(message) => {
                 let mut buffer = vec![0; 256];
@@ -85,9 +164,10 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
                     message.chat_id,
                     buffer.as_mut_slice(),
                 );
-                println!("Message buffer: [{:?}]", buffer);
+                info!("Message buffer: [{:?}]", buffer);
             }
             ChannelMessage::LobbyJoinRequest(lobby_id) => {
+                info!("Requested to join lobby {:?}", lobby_id);
                 steam_client
                     .client
                     .matchmaking()
@@ -120,10 +200,7 @@ fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
     }
 
     if keys.just_pressed(KeyCode::KeyT) {
-        if let Some(lobby_id) = steam_client.lobby_id {
-            matchmaking
-                .send_lobby_chat_message(lobby_id, &[0, 1, 2, 3, 4, 5])
-                .expect("Failed to send chat message to lobby");
-        }
+        let _ =
+            steam_client.send_message_others(NetworkData { data: vec![42] }, SendFlags::RELIABLE);
     }
 }

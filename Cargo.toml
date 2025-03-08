@@ -7,6 +7,8 @@ edition = "2021"
 bevy = "0.15"
 steamworks = { git = "https://github.com/JonnyPower/steamworks-rs.git", branch="master"}
 crossbeam-channel = "0.3"
+serde = "1.0.209"
+rmp-serde = "1.3.0"
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
 log = { version = "0.4", features = [
     "max_level_debug",

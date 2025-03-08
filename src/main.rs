@@ -93,7 +93,8 @@ enum ChannelMessage {
     LobbyCreated(LobbyId),
     LobbyJoinRequest(LobbyId),
     LobbyJoined(LobbyId),
-    LobbyChat(LobbyChatMsg),
+    LobbyChatMessage(LobbyChatMsg),
+    LobbyChatUpdate(LobbyChatUpdate),
 }
 
 struct SteamChannel {
@@ -111,12 +112,24 @@ impl SteamChannel {
 fn setup(client: Res<SteamClient>) {
     let sender = client.channel.sender.clone();
     let tx = client.channel.sender.clone();
+    let tx2 = client.channel.sender.clone();
 
     client
         .client
         .register_callback(move |message: LobbyChatMsg| {
             println!("Lobby chat message received: {:?}", message);
-            sender.send(ChannelMessage::LobbyChat(message)).unwrap();
+            sender
+                .send(ChannelMessage::LobbyChatMessage(message))
+                .unwrap();
+        });
+
+    client
+        .client
+        .register_callback(move |message: LobbyChatUpdate| {
+            println!("Lobby update  received: {:?}", message);
+            tx2.clone()
+                .send(ChannelMessage::LobbyChatUpdate(message))
+                .unwrap();
         });
 
     client
@@ -157,7 +170,7 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
                 steam_client.lobby_id = Some(lobby_id);
                 info!("Joined lobby {:?}", lobby_id)
             }
-            ChannelMessage::LobbyChat(message) => {
+            ChannelMessage::LobbyChatMessage(message) => {
                 let mut buffer = vec![0; 256];
                 let buffer = steam_client.client.matchmaking().get_lobby_chat_entry(
                     message.lobby,
@@ -165,6 +178,9 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
                     buffer.as_mut_slice(),
                 );
                 info!("Message buffer: [{:?}]", buffer);
+            }
+            ChannelMessage::LobbyChatUpdate(update) => {
+                info!("Update: {:?}", update);
             }
             ChannelMessage::LobbyJoinRequest(lobby_id) => {
                 info!("Requested to join lobby {:?}", lobby_id);

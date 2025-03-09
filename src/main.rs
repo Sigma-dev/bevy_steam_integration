@@ -1,8 +1,12 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::hashbrown::HashMap};
 use crossbeam_channel::*;
 use serde::{Deserialize, Serialize};
 use steamworks::{
-    networking_types::{NetConnectionEnd, NetworkingIdentity, NetworkingMessage, SendFlags},
+    networking_sockets::NetConnection,
+    networking_types::{
+        NetConnectionEnd, NetConnectionStatusChanged, NetworkingConfigEntry, NetworkingIdentity,
+        NetworkingMessage, SendFlags,
+    },
     *,
 };
 
@@ -21,6 +25,7 @@ struct SteamClient {
     client: Client,
     lobby_id: Option<LobbyId>,
     channel: SteamChannel,
+    sockets: HashMap<SteamId, NetConnection<ClientManager>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -34,6 +39,7 @@ impl SteamClient {
             client: Client::init_app(480).unwrap(),
             lobby_id: None,
             channel: SteamChannel::new(),
+            sockets: HashMap::new(),
         }
     }
 
@@ -91,14 +97,19 @@ impl SteamClient {
         let serialized = serialize_data.map_err(|err| err.to_string())?;
         let data_arr = serialized.as_slice();
         let network_identity = NetworkingIdentity::new_steam_id(target);
-        let res = self.client.networking_messages().send_message_to_user(
+        /*  let res = self.client.networking_messages().send_message_to_user(
             network_identity,
             flags,
             data_arr,
             0,
-        );
+        ); */
+        let res = self
+            .client
+            .networking()
+            .send_p2p_packet(target, SendType::Reliable, data_arr);
         println!("Sent message: {:?} {:?}", data, res);
-        return res.map_err(|e: SteamError| e.to_string());
+        return Ok(());
+        // return res.map_err(|e: SteamError| e.to_string());
     }
 }
 
@@ -108,6 +119,7 @@ enum ChannelMessage {
     LobbyJoined(LobbyId),
     LobbyChatMessage(LobbyChatMsg),
     LobbyChatUpdate(LobbyChatUpdate),
+    SessionRequest(P2PSessionRequest),
 }
 
 struct SteamChannel {
@@ -126,6 +138,9 @@ fn setup(client: Res<SteamClient>) {
     let sender = client.channel.sender.clone();
     let tx = client.channel.sender.clone();
     let tx2 = client.channel.sender.clone();
+    let tx3 = tx2.clone();
+
+    client.client.networking_utils().init_relay_network_access();
 
     client
         .client
@@ -134,6 +149,12 @@ fn setup(client: Res<SteamClient>) {
             sender
                 .send(ChannelMessage::LobbyChatMessage(message))
                 .unwrap();
+        });
+    let _request_callback = client
+        .client
+        .register_callback(move |request: P2PSessionRequest| {
+            println!("ACCEPTED PEER");
+            let _ = tx3.send(ChannelMessage::SessionRequest(request));
         });
 
     client
@@ -187,6 +208,15 @@ fn receive_messages(client: Res<SteamClient>) {
         }
         drop(message); //not sure about usefullness, mentionned in steam docs as release
     }
+
+    let mut buf = [0 as u8; 4096];
+    loop {
+        let msg2 = client.client.networking().read_p2p_packet(&mut buf);
+        let Some(msg) = msg2 else {
+            break;
+        };
+        println!("msg: {:?}", buf)
+    }
 }
 
 fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
@@ -199,6 +229,16 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
             }
             ChannelMessage::LobbyJoined(lobby_id) => {
                 steam_client.lobby_id = Some(lobby_id);
+                for player in steam_client.client.matchmaking().lobby_members(lobby_id) {
+                    let connection = steam_client.client.networking_sockets().connect_p2p(
+                        NetworkingIdentity::new_steam_id(player),
+                        0,
+                        [],
+                    );
+                    steam_client
+                        .sockets
+                        .insert(player, connection.expect("Socket connection failed :("));
+                }
                 info!("Joined lobby {:?}", lobby_id)
             }
             ChannelMessage::LobbyChatMessage(message) => {
@@ -216,6 +256,13 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
             ChannelMessage::LobbyJoinRequest(lobby_id) => {
                 info!("Requested to join lobby {:?}", lobby_id);
                 steam_client.join_lobby(lobby_id);
+            }
+            ChannelMessage::SessionRequest(session_request) => {
+                info!("Session request: {:?}", session_request);
+                steam_client
+                    .client
+                    .networking()
+                    .accept_p2p_session(session_request.remote);
             }
         };
     }

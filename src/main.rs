@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, window::PrimaryWindow};
 use crossbeam_channel::*;
 use serde::{Deserialize, Serialize};
 use steamworks::{
@@ -11,8 +11,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(SteamClient::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (handle_receivers, update))
-        .add_systems(PreUpdate, receive_messages)
+        .add_systems(Update, update)
         .run();
 }
 
@@ -122,133 +121,93 @@ impl SteamChannel {
     }
 }
 
-fn setup(client: Res<SteamClient>) {
-    let sender = client.channel.sender.clone();
-    let tx = client.channel.sender.clone();
-    let tx2 = client.channel.sender.clone();
-
-    client
-        .client
-        .register_callback(move |message: LobbyChatMsg| {
-            println!("Lobby chat message received: {:?}", message);
-            sender
-                .send(ChannelMessage::LobbyChatMessage(message))
-                .unwrap();
-        });
-
-    client
-        .client
-        .register_callback(move |message: LobbyChatUpdate| {
-            println!("Lobby update  received: {:?}", message);
-            tx2.clone()
-                .send(ChannelMessage::LobbyChatUpdate(message))
-                .unwrap();
-        });
-
-    client
-        .client
-        .register_callback(move |message: GameLobbyJoinRequested| {
-            let _ = tx.send(ChannelMessage::LobbyJoinRequest(message.lobby_steam_id));
-        });
-
+fn setup(mut commands: Commands, client: Res<SteamClient>) {
     client
         .client
         .networking_messages()
-        .session_request_callback(move |session_request| {
-            println!("Received session request");
-            session_request.accept();
+        .session_request_callback(move |req| {
+            println!("Accepting session request from {:?}", req.remote());
+            req.accept();
         });
 
+    // Install a callback to debug print failed peer connections
     client
         .client
         .networking_messages()
-        .session_failed_callback(move |res| {
-            println!(
-                "Session Failed: {:?}",
-                res.end_reason().unwrap_or(NetConnectionEnd::Other(-42))
-            );
+        .session_failed_callback(|info| {
+            eprintln!("Session failed: {info:#?}");
         });
+
+    commands.spawn(Camera2d);
 }
 
-fn receive_messages(client: Res<SteamClient>) {
-    let messages: Vec<NetworkingMessage<ClientManager>> = client
-        .client
-        .networking_messages()
-        .receive_messages_on_channel(0, 2048);
-
-    for message in messages {
-        println!("Received message: {:?}", message.data());
-        let sender = message.identity_peer().steam_id().unwrap();
-        let serialized_data = message.data();
-        let data_try: Result<NetworkData, _> = rmp_serde::from_slice(serialized_data);
-
-        if let Ok(data) = data_try {
-            println!("Decoded: {:?}", data);
-        }
-        drop(message); //not sure about usefullness, mentionned in steam docs as release
-    }
-}
-
-fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
-    let tx: Sender<ChannelMessage> = steam_client.channel.sender.clone();
-    if let Ok(msg) = steam_client.channel.receiver.try_recv() {
-        match msg {
-            ChannelMessage::LobbyCreated(lobby_id) => {
-                steam_client.lobby_id = Some(lobby_id);
-                info!("Created lobby {:?}", lobby_id);
-            }
-            ChannelMessage::LobbyJoined(lobby_id) => {
-                steam_client.lobby_id = Some(lobby_id);
-                info!("Joined lobby {:?}", lobby_id)
-            }
-            ChannelMessage::LobbyChatMessage(message) => {
-                let mut buffer = vec![0; 256];
-                let buffer = steam_client.client.matchmaking().get_lobby_chat_entry(
-                    message.lobby,
-                    message.chat_id,
-                    buffer.as_mut_slice(),
-                );
-                info!("Message buffer: [{:?}]", buffer);
-            }
-            ChannelMessage::LobbyChatUpdate(update) => {
-                info!("Update: {:?}", update);
-            }
-            ChannelMessage::LobbyJoinRequest(lobby_id) => {
-                info!("Requested to join lobby {:?}", lobby_id);
-                steam_client.join_lobby(lobby_id);
-            }
-        };
-    }
-}
-
-fn update(keys: Res<ButtonInput<KeyCode>>, steam_client: Res<SteamClient>) {
+fn update(
+    mut gizmos: Gizmos,
+    steam_client: Res<SteamClient>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    // query to get camera transform
+    q_camera: Query<(&Camera, &GlobalTransform)>,
+) {
     steam_client.client.run_callbacks();
-    let matchmaking = steam_client.client.matchmaking();
-    let tx = steam_client.channel.sender.clone();
 
-    if keys.just_pressed(KeyCode::KeyC) {
-        matchmaking.create_lobby(LobbyType::FriendsOnly, 4, move |result| match result {
-            Ok(lobby_id) => {
-                tx.send(ChannelMessage::LobbyCreated(lobby_id)).unwrap();
-                println!("Created lobby: [{}]", lobby_id.raw())
-            }
-            Err(err) => panic!("Error: {}", err),
-        });
-    }
+    // Draw us at our mouse position
+    // get the camera info and transform
+    // assuming there is exactly one main camera entity, so Query::single() is OK
+    let (camera, camera_transform) = q_camera.single();
 
-    if keys.just_pressed(KeyCode::KeyT) {
-        let _ =
-            steam_client.send_message_others(NetworkData { data: vec![42] }, SendFlags::RELIABLE);
-    }
+    // There is only one primary window, so we can similarly get it from the query:
+    let window = q_window.single();
 
-    if keys.just_pressed(KeyCode::KeyJ) {
-        for friend in steam_client.client.friends().get_friends(FriendFlags::ALL) {
-            if let Some(game) = friend.game_played() {
-                if game.game.app_id() == AppId(480) {
-                    steam_client.join_lobby(game.lobby);
-                    println!("Auto join");
-                }
-            }
+    // check if the cursor is inside the window and get its position
+    // then, ask bevy to convert into world coordinates, and truncate to discard Z
+    if let Some(position) = window
+        .cursor_position()
+        .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor).ok())
+        .map(|ray| ray.origin.truncate())
+    {
+        println!("position: {}", position);
+        gizmos.circle_2d(Isometry2d::from_translation(position), 10., Color::WHITE);
+
+        // Send our mouse position to all friends
+        for friend in steam_client
+            .client
+            .friends()
+            .get_friends(FriendFlags::IMMEDIATE)
+        {
+            let identity = NetworkingIdentity::new_steam_id(friend.id());
+
+            // Convert our position to bytes
+            let mut data = [0; 8];
+            data[0..4].copy_from_slice(&position.x.to_le_bytes());
+            data[4..8].copy_from_slice(&position.y.to_le_bytes());
+
+            let _ = steam_client
+                .client
+                .networking_messages()
+                .send_message_to_user(identity, SendFlags::UNRELIABLE_NO_DELAY, &data, 0);
         }
+    }
+
+    let mut peers: Vec<(String, Vec2)> = Vec::new();
+
+    // Receive messages from the network
+    for message in steam_client
+        .client
+        .networking_messages()
+        .receive_messages_on_channel(0, 100)
+    {
+        let peer = message.identity_peer();
+        let data = message.data();
+
+        // Convert peer position from bytes
+        let peer_x = f32::from_le_bytes(data[0..4].try_into().expect("Someone sent bad message"));
+        let peer_y = f32::from_le_bytes(data[4..8].try_into().expect("Someone sent bad message"));
+
+        peers.push((peer.debug_string(), Vec2::new(peer_x, peer_y)));
+    }
+
+    // Draw all peers
+    for peer in peers {
+        gizmos.circle_2d(Isometry2d::from_translation(peer.1), 10., Color::WHITE);
     }
 }

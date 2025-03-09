@@ -230,14 +230,14 @@ fn handle_receivers(mut steam_client: ResMut<SteamClient>) {
             ChannelMessage::LobbyJoined(lobby_id) => {
                 steam_client.lobby_id = Some(lobby_id);
                 for player in steam_client.client.matchmaking().lobby_members(lobby_id) {
-                    let connection = steam_client.client.networking_sockets().connect_p2p(
+                    /* let connection = steam_client.client.networking_sockets().connect_p2p(
                         NetworkingIdentity::new_steam_id(player),
                         0,
                         [],
                     );
                     steam_client
                         .sockets
-                        .insert(player, connection.expect("Socket connection failed :("));
+                        .insert(player, connection.expect("Socket connection failed :(")); */
                 }
                 info!("Joined lobby {:?}", lobby_id)
             }

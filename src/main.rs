@@ -215,7 +215,13 @@ fn receive_messages(client: Res<SteamClient>) {
         let Some(msg) = msg2 else {
             break;
         };
-        println!("msg: {:?}", buf)
+        let data_try: Result<NetworkData, _> = rmp_serde::from_slice(&buf);
+
+        if let Ok(data) = data_try {
+            println!("Decoded: {:?}", data);
+        } else {
+            println!("Fail decode");
+        }
     }
 }
 
